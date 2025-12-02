@@ -6,6 +6,14 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const port = process.env.PORT || 5000;
 
+// tracking id generator
+function generateTrackingId() {
+  const prefix = "TRK";
+  const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
+  const timestamp = Date.now().toString().slice(-6);
+  return `${prefix}-${timestamp}-${randomPart}`;
+}
+
 // Middleware
 app.use(express.json());
 app.use(cors());
@@ -115,36 +123,184 @@ async function run() {
     app.patch("/payment-success", async (req, res) => {
       try {
         const sessionId = req.query.session_id;
+
+        // Validate session ID
         if (!sessionId) {
-          return res.status(400).send({ error: "Missing session_id" });
+          return res
+            .status(400)
+            .json({ success: false, message: "Missing session_id" });
         }
+
+        // Fetch Stripe session
         const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status === "paid") {
-          const id = session.metadata.parcelId;
-          const query = { _id: new ObjectId(id) };
-          const update = {
+
+        // Validate session
+        if (!session) {
+          return res
+            .status(404)
+            .json({ success: false, message: "Invalid session" });
+        }
+
+        if (session.payment_status !== "paid") {
+          return res
+            .status(400)
+            .json({ success: false, message: "Payment not completed" });
+        }
+
+        // Validate metadata
+        if (!session.metadata?.parcelId) {
+          return res
+            .status(400)
+            .json({ success: false, message: "Missing parcel metadata" });
+        }
+        const transactionId = session.payment_intent;
+        // Validate
+        if (!transactionId) {
+          return res.status(400).json({
+            success: false,
+            message: "Missing transactionId",
+          });
+        }
+
+        // Check payment existence
+        const paymentExist = await paymentCollection.findOne({ transactionId });
+        if (paymentExist) {
+          return res.status(409).json({
+            success: false,
+            message: "Payment already processed",
+            existedPayment: paymentExist,
+          });
+        }
+
+        const parcelId = session.metadata.parcelId;
+        const trackingId = generateTrackingId();
+
+        // Update parcel status
+        const updateResult = await parcelCollection.updateOne(
+          { _id: new ObjectId(parcelId) },
+
+          {
             $set: {
               paymentStatus: "paid",
+              trackingId: trackingId,
+              updatedAt: new Date(),
             },
-          };
-          const result = await parcelCollection.updateOne(query, update);
-          const paymentHistory = {
-            amount: session.amount_total,
-            currency: session.currency,
-            customerEmail: session.customer_email,
-            parcelId: session.metadata.parcelId,
-            parcelName: session.metadata.parcelName,
-            transactionId: session.payment_intent,
-            paymentStatus: session.payment_status,
-            paidAt: new Date(),
-            trackingId: "hello",
-          };
-          return res.send({ success: true, data: result });
-        }
+          }
+        );
+
+        // Payment History Object
+        const paymentHistory = {
+          amount: session.amount_total,
+          currency: session.currency,
+          customerEmail: session.customer_email,
+          parcelId: parcelId,
+          parcelName: session.metadata.parcelName || "Unknown",
+          transactionId: session.payment_intent,
+          paymentStatus: session.payment_status,
+          trackingId: trackingId,
+          paidAt: new Date(),
+        };
+
+        // Insert payment log
+        const paymentResult = await paymentCollection.insertOne(paymentHistory);
+
+        return res.status(200).json({
+          success: true,
+          message: "Payment verified & updated successfully",
+          parcelUpdate: updateResult,
+          trackingId: trackingId,
+          transactionId: session.payment_intent,
+          paymentHistory: paymentResult,
+        });
       } catch (error) {
-        res.status(500).send({ error: "server error" });
+        console.error("PAYMENT SUCCESS ERROR:", error);
+
+        return res.status(500).json({
+          success: false,
+          message: "Server error while verifying payment",
+          error: error.message,
+        });
       }
     });
+
+    // Get all payment history for a customer
+    app.get("/payments", async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email) {
+          return res.status(400).json({
+            success: false,
+            message: "Missing email in query.",
+          });
+        }
+
+        // Get all payments for this email
+        const payments = await paymentCollection
+          .find({ customerEmail: email })
+          .sort({ paidAt: -1 })
+          .toArray();
+
+        if (!payments || payments.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: "No payment history found for this email.",
+          });
+        }
+
+        res.status(200).json({
+          success: true,
+          data: payments,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({
+          success: false,
+          message: "Server error",
+        });
+      }
+    });
+
+    // User payment
+    // app.patch("/payment-success", async (req, res) => {
+    //   try {
+    //     const sessionId = req.query.session_id;
+    //     if (!sessionId) {
+    //       return res.status(400).send({ error: "Missing session_id" });
+    //     }
+    //     const session = await stripe.checkout.sessions.retrieve(sessionId);
+    //     if (session.payment_status === "paid") {
+    //       const id = session.metadata.parcelId;
+    //       const query = { _id: new ObjectId(id) };
+    //       const update = {
+    //         $set: {
+    //           paymentStatus: "paid",
+    //         },
+    //       };
+    //       const result = await parcelCollection.updateOne(query, update);
+    //       const paymentHistory = {
+    //         amount: session.amount_total,
+    //         currency: session.currency,
+    //         customerEmail: session.customer_email,
+    //         parcelId: session.metadata.parcelId,
+    //         parcelName: session.metadata.parcelName,
+    //         transactionId: session.payment_intent,
+    //         paymentStatus: session.payment_status,
+    //         paidAt: new Date(),
+    //         trackingId: "hello",
+    //       };
+    //       if (session.payment_status === "paid") {
+    //         const resultPayment = await paymentCollection.insertOne(
+    //           paymentHistory
+    //         );
+
+    //         return res.send({ success: true, data: resultPayment });
+    //       }
+    //       return res.send({ success: true, data: result });
+    //     }
+    //   } catch (error) {
+    //     res.status(500).send({ error: "server error" });
+    //   }
+    // });
 
     // Unknown route
     // app.get("*", (req, res) => {
