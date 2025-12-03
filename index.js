@@ -6,6 +6,13 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const port = process.env.PORT || 5000;
 
+//Firebase admin
+const admin = require("firebase-admin");
+const serviceAccount = require("./zap-shift-server-firebase-adminsdk.json");
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
 // tracking id generator
 function generateTrackingId() {
   const prefix = "TRK";
@@ -17,6 +24,26 @@ function generateTrackingId() {
 // Middleware
 app.use(express.json());
 app.use(cors());
+// Firebase Middleware
+const verifyFirebaseToken = async (req, res, next) => {
+  const headerAuth = req.headers.authorization;
+  if (!headerAuth) {
+    return res.status(401).send({
+      message: "Unothorized access",
+    });
+  }
+  const token = headerAuth.split(" ")[1];
+  if (!token) {
+    return res.status(403).send("Unothorized access , There are no token.");
+  }
+  try {
+    const verify = await admin.auth().verifyIdToken(token);
+    req.token_email = verify.email;
+    next();
+  } catch (error) {
+    return res.status(401).send({ message: error });
+  }
+};
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ixbmwio.mongodb.net/?appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -224,16 +251,20 @@ async function run() {
     });
 
     // Get all payment history for a customer
-    app.get("/payments", async (req, res) => {
+    app.get("/payments", verifyFirebaseToken, async (req, res) => {
       try {
         const email = req.query.email;
+        console.log(req.token_email);
+
         if (!email) {
           return res.status(400).json({
             success: false,
             message: "Missing email in query.",
           });
         }
-
+        if (email !== req.token_email) {
+          return res.status(403).send("Unothorized access, no email.");
+        }
         // Get all payments for this email
         const payments = await paymentCollection
           .find({ customerEmail: email })
