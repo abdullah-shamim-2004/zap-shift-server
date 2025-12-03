@@ -9,6 +9,7 @@ const port = process.env.PORT || 5000;
 //Firebase admin
 const admin = require("firebase-admin");
 const serviceAccount = require("./zap-shift-server-firebase-adminsdk.json");
+// const { use } = require("react");
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -59,8 +60,22 @@ async function run() {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
     const db = client.db("zap_shift_db");
+    const userCollection = db.collection("users");
     const parcelCollection = db.collection("parcels");
     const paymentCollection = db.collection("payments");
+
+    // User releted api
+    app.post("/users", async (req, res) => {
+      try {
+        const user = req.body;
+        user.role = "user";
+        user.createAt = new Date();
+        const result = userCollection.insertOne(user);
+        res.status(200).send(result);
+      } catch (error) {
+        res.status(500).send({ message: error });
+      }
+    });
 
     // parcel api
     app.get("/parcels", async (req, res) => {
