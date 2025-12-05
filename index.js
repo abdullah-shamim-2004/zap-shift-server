@@ -63,6 +63,7 @@ async function run() {
     const userCollection = db.collection("users");
     const parcelCollection = db.collection("parcels");
     const paymentCollection = db.collection("payments");
+    const ridersCollection = db.collection("riders");
 
     // User releted api
     app.post("/users", async (req, res) => {
@@ -70,14 +71,77 @@ async function run() {
         const user = req.body;
         user.role = "user";
         user.createAt = new Date();
+        const email = user.email;
+        const userExist = userCollection.findOne({ email });
+        if (userExist) {
+          return res.send({
+            message: "User Exist",
+          });
+        }
         const result = userCollection.insertOne(user);
         res.status(200).send(result);
       } catch (error) {
         res.status(500).send({ message: error });
       }
     });
+    // rider relted api
+    app.get("/riders", async (req, res) => {
+      try {
+        const query = {};
+        if (req.query.status) {
+          query.status = req.query.status;
+        }
+        const result = await ridersCollection.find(query).toArray();
+        if (!result) {
+          return res.status(404).json({ error: "Rider not found." });
+        }
+        res.status(200).send(result);
+      } catch (error) {
+        res.status(500).send({ message: error });
+      }
+    });
+    app.post("/riders", async (req, res) => {
+      try {
+        const rider = req.body;
+        rider.status = "pending";
+        rider.createAt = new Date();
+        const result = await ridersCollection.insertOne(rider);
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ message: error });
+      }
+    });
+    app.patch("/riders/:id", verifyFirebaseToken, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const status = req.body.status;
+        const query = { _id: new ObjectId(id) };
+        const updateInfo = {
+          $set: {
+            status: status,
+          },
+        };
+        const result = await ridersCollection.updateOne(query, updateInfo);
+        if (status === "approved") {
+          const email = req.body.email;
+          const UserQuery = { email: email };
+          const updateUser = {
+            $set: {
+              role: "rider",
+            },
+          };
+          const userResult = await userCollection.updateOne(
+            UserQuery,
+            updateUser
+          );
+        }
+        res.status(201).send(result, userResult);
+      } catch (error) {
+        res.status(500).send({ message: error });
+      }
+    });
 
-    // parcel api
+    // parcel releted api
     app.get("/parcels", async (req, res) => {
       try {
         const { email } = req.query;
@@ -93,7 +157,7 @@ async function run() {
       }
     });
 
-    // Find the parcel
+    
     app.get("/parcels/:id", async (req, res) => {
       try {
         const { id } = req.params;
